@@ -18,6 +18,7 @@
 #import "Facebook.h"
 #import "FBFrictionlessRequestSettings.h"
 #import "FBUtility.h"
+#import <QuartzCore/QuartzCore.h>
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // global
@@ -45,6 +46,7 @@ static BOOL FBIsDeviceIPad() {
 
 @implementation FBDialog {
     BOOL _everShown;
+    BOOL _hasCancelled;
 }
 
 @synthesize delegate = _delegate,
@@ -173,7 +175,7 @@ params   = _params;
     }
     
     CGFloat width = floor(scale_factor * frame.size.width) - kPadding * 2;
-    CGFloat height = floor(scale_factor * frame.size.height) - kPadding * 2;
+    CGFloat height = floor(scale_factor * frame.size.height) - kPadding * 2 - 164;
     
     _orientation = [UIApplication sharedApplication].statusBarOrientation;
     if (UIInterfaceOrientationIsLandscape(_orientation)) {
@@ -197,22 +199,6 @@ params   = _params;
         [_webView stringByEvaluatingJavaScriptFromString:
          @"document.body.removeAttribute('orientation');"];
     }
-}
-
-- (void)bounce1AnimationStopped {
-    [UIView beginAnimations:nil context:nil];
-    [UIView setAnimationDuration:kTransitionDuration/2];
-    [UIView setAnimationDelegate:self];
-    [UIView setAnimationDidStopSelector:@selector(bounce2AnimationStopped)];
-    self.transform = CGAffineTransformScale([self transformForOrientation], 0.9, 0.9);
-    [UIView commitAnimations];
-}
-
-- (void)bounce2AnimationStopped {
-    [UIView beginAnimations:nil context:nil];
-    [UIView setAnimationDuration:kTransitionDuration/2];
-    self.transform = [self transformForOrientation];
-    [UIView commitAnimations];
 }
 
 - (NSURL*)generateURL:(NSString*)baseURL params:(NSDictionary*)params {
@@ -271,12 +257,9 @@ params   = _params;
     _loadingURL = nil;
     
     if (animated && _everShown) {
-        [UIView beginAnimations:nil context:nil];
-        [UIView setAnimationDuration:kTransitionDuration];
-        [UIView setAnimationDelegate:self];
-        [UIView setAnimationDidStopSelector:@selector(postDismissCleanup)];
-        self.alpha = 0;
-        [UIView commitAnimations];
+        [self showSnapshotOfWebView];
+
+        [self dismissWebView];
     } else {
         [self postDismissCleanup];
     }
@@ -330,12 +313,23 @@ params   = _params;
         self.autoresizesSubviews = YES;
         self.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         self.contentMode = UIViewContentModeRedraw;
-        
+
         _webView = [[UIWebView alloc] initWithFrame:CGRectMake(kPadding, kPadding, 480, 480)];
         _webView.delegate = self;
         _webView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _webView.scrollView.scrollEnabled = NO;
         [self addSubview:_webView];
-        
+
+        _webObscuringView = [[UIView alloc] initWithFrame:CGRectMake(kPadding, kPadding, 480, 480)];
+        _webObscuringView.backgroundColor = [UIColor whiteColor];
+        _webObscuringView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self addSubview:_webObscuringView];
+
+        _webScreenshotView = [[UIImageView alloc] initWithFrame:CGRectMake(kPadding, kPadding, 480, 480)];
+        _webScreenshotView.alpha = 0;
+        _webScreenshotView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [self addSubview:_webScreenshotView];
+
         UIImage* closeImage = [UIImage imageNamed:@"FacebookSDKResources.bundle/FBDialog/images/close.png"];
         
         UIColor* color = [UIColor colorWithRed:167.0/255 green:184.0/255 blue:216.0/255 alpha:1];
@@ -369,7 +363,10 @@ params   = _params;
         UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleBottomMargin
         | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin;
         [self addSubview:_spinner];
-        _modalBackgroundView = [[UIView alloc] init];
+
+        _modalBackgroundView = [[UIButton buttonWithType:UIButtonTypeCustom] retain];
+        [_modalBackgroundView addTarget:self action:@selector(cancel)
+               forControlEvents:UIControlEventTouchUpInside];
     }
     return self;
 }
@@ -377,6 +374,8 @@ params   = _params;
 - (void)dealloc {
     _webView.delegate = nil;
     [_webView release];
+    [_webObscuringView release];
+    [_webScreenshotView release];
     [_params release];
     [_serverURL release];
     [_spinner release];
@@ -400,7 +399,7 @@ params   = _params;
     [self strokeLines:webRect stroke:kBorderBlack];
 }
 
-// Display the dialog's WebView with a slick pop-up animation	
+// Display the dialog's WebView with a slick pop-up animation
 - (void)showWebView {	
     UIWindow* window = [UIApplication sharedApplication].keyWindow;	
     if (!window) {	
@@ -414,17 +413,51 @@ params   = _params;
     [UIView beginAnimations:nil context:nil];	
     [UIView setAnimationDuration:kTransitionDuration/1.5];	
     [UIView setAnimationDelegate:self];	
-    [UIView setAnimationDidStopSelector:@selector(bounce1AnimationStopped)];	
-    self.transform = CGAffineTransformScale([self transformForOrientation], 1.1, 1.1);	
-    [UIView commitAnimations];	
-  
+    [UIView setAnimationDidStopSelector:@selector(bounce1AnimationStopped)];
+    [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
+    self.transform = CGAffineTransformScale([self transformForOrientation], 1.075, 1.075);
+    [UIView commitAnimations];
+
     _everShown = YES;
-    [self dialogWillAppear];
-    [self addObservers];	
-}	
+    [self dialogWillAppear];	
+    [self addObservers];
+}
+
+- (void)bounce1AnimationStopped {
+    [UIView beginAnimations:nil context:nil];
+    [UIView setAnimationDuration:kTransitionDuration/2];
+    [UIView setAnimationDelegate:self];
+    [UIView setAnimationDidStopSelector:@selector(bounce2AnimationStopped)];
+    [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
+    self.transform = CGAffineTransformScale([self transformForOrientation], 0.925, 0.925);
+    [UIView commitAnimations];
+}
+
+- (void)bounce2AnimationStopped {
+    [UIView beginAnimations:nil context:nil];
+    [UIView setAnimationDuration:kTransitionDuration/2];
+    self.transform = [self transformForOrientation];
+    [UIView commitAnimations];
+}
+
+// Display the dialog's WebView with a slick pop-up animation
+- (void)dismissWebView {
+    [UIView beginAnimations:nil context:nil];
+    [UIView setAnimationDuration:kTransitionDuration / 1.3];
+    self.alpha = 0.0;
+    [UIView commitAnimations];
+
+    [UIView beginAnimations:nil context:nil];
+    [UIView setAnimationDuration:kTransitionDuration];
+    [UIView setAnimationDelegate:self];
+    [UIView setAnimationDidStopSelector:@selector(postDismissCleanup)];
+    [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
+    self.transform = CGAffineTransformScale([self transformForOrientation], 0.001, 0.001);
+    [UIView commitAnimations];
+}
 
 // Show a spinner during the loading time for the dialog. This is designed to show	
-// on top of the webview but before the contents have loaded.	
+// on top of the webview but before the contents have loaded.
 - (void)showSpinner {	
     [_spinner sizeToFit];	
     [_spinner startAnimating];	
@@ -444,7 +477,13 @@ params   = _params;
     NSURL* url = request.URL;
     
     if ([url.scheme isEqualToString:@"fbconnect"]) {
-        if ([[url.resourceSpecifier substringToIndex:8] isEqualToString:@"//cancel"]) {
+        BOOL actuallyPosted = [url.resourceSpecifier rangeOfString:@"post_id"].location != NSNotFound;
+        if (actuallyPosted) {
+            if (_frictionlessSettings.enabled) {
+                [self dialogSuccessHandleFrictionlessResponses:url];
+            }
+            [self dialogDidSucceed:url];
+        } else {
             NSString * errorCode = [self getStringFromUrl:[url absoluteString] needle:@"error_code="];
             NSString * errorStr = [self getStringFromUrl:[url absoluteString] needle:@"error_msg="];
             if (errorCode) {
@@ -456,11 +495,6 @@ params   = _params;
             } else {
                 [self dialogDidCancel:url];
             }
-        } else {
-            if (_frictionlessSettings.enabled) {
-                [self dialogSuccessHandleFrictionlessResponses:url];
-            }
-            [self dialogDidSucceed:url];
         }
         return NO;
     } else if ([_loadingURL isEqual:url]) {
@@ -490,6 +524,60 @@ params   = _params;
         [self hideSpinner];	
     }
     [self updateWebOrientation];
+    [self fadeInWebView];
+
+    [self prefillMessageFromParams];
+
+    [self snapshotWebView];
+}
+
+- (void)fadeInWebView {
+    [UIView beginAnimations:nil context:nil];
+    [UIView setAnimationDuration:0.45];
+    [UIView setAnimationCurve:UIViewAnimationCurveEaseInOut];
+
+    _webObscuringView.alpha = 0.0;
+    _closeButton.alpha = 0.0;
+
+    [UIView commitAnimations];
+}
+
+- (void)showSnapshotOfWebView {
+    _webScreenshotView.alpha = 1.0;
+}
+
+- (void)hideSnapshotOfWebView {
+    _webScreenshotView.alpha = 0.0;
+}
+
+- (void)snapshotWebView {
+    UIImage *snapshot = [self snapshotOfView:_webView];
+    _webScreenshotView.image = snapshot;
+}
+
+- (UIImage *)snapshotOfView:(UIView *)view {
+    UIGraphicsBeginImageContextWithOptions(view.bounds.size, NO, 0.0);
+
+    [view.layer renderInContext:UIGraphicsGetCurrentContext()];
+    UIImage *snapshot = UIGraphicsGetImageFromCurrentImageContext();
+
+    UIGraphicsEndImageContext();
+
+    return snapshot;
+}
+
+- (void)prefillMessageFromParams {
+    [self setMessage:[_params objectForKey:@"message"]];
+}
+
+- (void)setMessage:(NSString *)message {
+    NSString *messageSettingJS = [NSString stringWithFormat:@"document.getElementsByName("
+                            "'feedform_user_message')[0].value = '%@';", message];
+    NSString *resizingJS = @"var ta = document.getElementsByName("
+    "'feedform_user_message')[0];"
+    "ta.style.height = ta.scrollHeight + 4 + 'px';";
+    [_webView stringByEvaluatingJavaScriptFromString:messageSettingJS];
+    [_webView stringByEvaluatingJavaScriptFromString:resizingJS];
 }
 
 - (void)webView:(UIWebView *)webView didFailLoadWithError:(NSError *)error {
@@ -553,6 +641,8 @@ params   = _params;
                                      kPadding + kBorderWidth,
                                      kPadding + kBorderWidth);
     }
+
+    [self snapshotWebView];
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
@@ -617,18 +707,22 @@ params   = _params;
     
     CGFloat innerWidth = self.frame.size.width - (kBorderWidth+1)*2;
     [_closeButton sizeToFit];
-    
+
     _closeButton.frame = CGRectMake(
                                     2,
                                     2,
                                     29,
                                     29);
-    
-    _webView.frame = CGRectMake(
+
+    CGRect webViewFrame = CGRectMake(
                                 kBorderWidth+1,
                                 kBorderWidth+1,
                                 innerWidth,
                                 self.frame.size.height - (1 + kBorderWidth*2));
+
+    _webView.frame = webViewFrame;
+    _webObscuringView.frame = webViewFrame;
+    _webScreenshotView.frame = webViewFrame;
     
     if (!_isViewInvisible) {	
         [self showSpinner];	
@@ -695,9 +789,13 @@ params   = _params;
 }
 
 - (void)dialogDidCancel:(NSURL *)url {
+    if (_hasCancelled) {
+        return;
+    }
+    _hasCancelled = YES;
     // retain self for the life of this method, in case we are released by a client
     id me = [self retain];
-    
+
     @try {
         if ([_delegate respondsToSelector:@selector(dialogDidNotCompleteWithUrl:)]) {
             [_delegate dialogDidNotCompleteWithUrl:url];

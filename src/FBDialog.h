@@ -32,6 +32,8 @@
     NSString * _serverURL;
     NSURL* _loadingURL;
     UIWebView* _webView;
+    UIView* _webObscuringView;
+    UIImageView* _webScreenshotView;
     UIActivityIndicatorView* _spinner;
     UIButton* _closeButton;
     UIInterfaceOrientation _orientation;
@@ -40,7 +42,7 @@
     FBFrictionlessRequestSettings* _frictionlessSettings;
     
     // Ensures that UI elements behind the dialog are disabled.
-    UIView* _modalBackgroundView;
+    UIButton* _modalBackgroundView;
 }
 
 /**
